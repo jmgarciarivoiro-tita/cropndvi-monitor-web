@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f5f3a">
+<title>CropNDVI Monitor v4</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- ===== login ===== -->
+<section id="login" hidden>
+  <form id="loginForm" class="login-card" autocomplete="on">
+    <h1>CropNDVI Monitor</h1>
+    <p class="muted">Trigo, maíz y soja: estado, avance de cosecha y lluvias por localidad.</p>
+    <label>Email<input id="lEmail" type="email" required autocomplete="username"></label>
+    <label>Contraseña<input id="lPass" type="password" required autocomplete="current-password"></label>
+    <button class="btn primary" type="submit" id="lBtn">Ingresar</button>
+    <p id="lErr" class="err" role="alert"></p>
+    <button type="button" class="lnk" id="lOlvide">Primer ingreso u olvidé mi contraseña</button>
+  </form>
+  <form id="claveForm" class="login-card" hidden>
+    <h1>Definí tu contraseña</h1>
+    <p class="muted" id="cEmail"></p>
+    <label>Nueva contraseña (mínimo 10 caracteres)<input id="c1" type="password" minlength="10" required autocomplete="new-password"></label>
+    <label>Repetir contraseña<input id="c2" type="password" minlength="10" required autocomplete="new-password"></label>
+    <button class="btn primary" type="submit" id="cBtn">Guardar y entrar</button>
+    <p id="cErr" class="err" role="alert"></p>
+  </form>
+</section>
+
+<!-- ===== app ===== -->
+<div id="app" hidden>
+  <header>
+    <h1>CropNDVI<span class="lg"> Monitor</span></h1>
+    <span id="workerPill" class="pill off" title="Última actualización de cada proceso del worker">Actualización: …</span>
+    <span class="sp"></span>
+    <button class="hbtn" id="bInforme" type="button" title="Informe de las localidades filtradas (PDF o Excel)"><span class="lg">Exportar informe</span><span class="sm">Informe</span></button>
+    <button class="hbtn ghost" id="bRefrescar" type="button" title="Volver a leer los datos">↻<span class="lg"> Actualizar</span></button>
+    <button class="hbtn ghost" id="bLogout" type="button" title="Cerrar sesión">Salir</button>
+  </header>
+  <nav id="filtros" aria-label="Filtros">
+    <label>Campaña<select id="fCamp"></select></label>
+    <div class="seg" id="fCultivo" role="radiogroup" aria-label="Cultivo"></div>
+    <label>Ver en el mapa<select id="fModo">
+      <option value="estado">Estado del cultivo</option>
+      <option value="cosecha">% cosechado (estimado)</option>
+      <option value="ndvi">NDVI actual</option>
+      <option value="lluvia">Lluvia últimos 15 días</option>
+    </select></label>
+    <label>Provincia<select id="fProv"><option value="">Todas</option></select></label>
+    <label>Delegación MAGyP<select id="fDeleg"><option value="">Todas</option></select></label>
+  </nav>
+  <main>
+    <div id="mapWrap">
+      <div id="map" aria-label="Mapa de localidades"></div>
+      <div id="leyenda" class="leyenda" aria-live="polite"></div>
+    </div>
+    <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Ajustar ancho del panel" tabindex="0" title="Arrastrá para cambiar el ancho del panel (doble clic: ancho original)"></div>
+    <aside id="panel">
+      <div class="sec">
+        <h2 id="kpiTitulo">Resumen</h2>
+        <div id="summary"></div>
+        <p id="kpiNota" class="cap"></p>
+        <div class="lista-ctl">
+          <input id="filtro" class="filtro" type="search" placeholder="Buscar localidad o departamento…" aria-label="Buscar localidades">
+          <select id="orden" aria-label="Ordenar"><option value="valor">Ordenar por valor</option><option value="nombre">Ordenar por nombre</option><option value="ha">Ordenar por hectáreas</option></select>
+        </div>
+        <div id="filtroInfo" class="filtro-info"></div>
+        <div id="list"></div>
+      </div>
+      <div id="detail" hidden></div>
+    </aside>
+  </main>
+  <button type="button" id="bVerMapa" class="fab" hidden>▲ Mapa</button>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<div id="modalInf" hidden>
+  <div class="mbox mbox-s" role="dialog" aria-modal="true" aria-labelledby="infTitulo">
+    <h3 id="infTitulo">Exportar informe</h3>
+    <p>Incluye las localidades del filtro actual para el cultivo elegido. Podés destildar las que no quieras.</p>
+    <p id="infFiltro" class="inf-filtro"></p>
+    <div class="inf-sel"><span id="infCuenta"></span><span><button type="button" class="lnk" id="infTodos">Todas</button> · <button type="button" class="lnk" id="infNinguno">Ninguna</button></span></div>
+    <div id="infLista" class="inf-lotes"></div>
+    <label class="inf-opt"><input type="checkbox" id="infDetalle"> Detalle por localidad con curvas de NDVI y de avance (una página cada una, hasta 60)</label>
+    <div class="mbtns"><button class="btn" id="bInfClose" type="button">Cancelar</button><button class="btn" id="bInfCsv" type="button">Excel (CSV)</button><button class="btn primary" id="bInfPdf" type="button">Informe para imprimir / PDF</button></div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
