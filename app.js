@@ -147,7 +147,8 @@
   // ---------- mapa ----------
   function initMap() {
     map = L.map('map', { preferCanvas: true, zoomControl: true }).setView([-32.6, -62.2], 6);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 13, attribution: '© OpenStreetMap · © CARTO' }).addTo(map);
+    // Teselas estándar de OpenStreetMap (las de CARTO empezaron a pedir API key). Mismo proveedor que el Tablero Logístico.
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' }).addTo(map);
     capa = L.layerGroup().addTo(map);
   }
   function radio(l) {
