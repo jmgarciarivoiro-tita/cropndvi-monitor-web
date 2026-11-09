@@ -163,6 +163,15 @@
   .leyenda .grad{height:10px;border-radius:5px;margin:4px 0 2px}
   .leyenda .esc{display:flex;justify-content:space-between;color:var(--mute);font-variant-numeric:tabular-nums}
   .leyenda small{display:block;color:var(--mute);margin-top:4px;line-height:1.3}
+  #filtros label[hidden]{display:none}
+  /* #10 flete: acopios (cuadrado) y terminales (rombo) */
+  .dest{display:inline-block;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.35);box-sizing:border-box}
+  .dest.acopio{background:#52514e;border-radius:2px;width:12px;height:12px}
+  .dest.terminal{background:#eb6834;transform:rotate(45deg);width:12px;height:12px}
+  .dest.elegido{box-shadow:0 0 0 3px #0d366b}
+  .leyenda .it .dest{flex:none;margin:0 1px}
+  .cult.flete td:first-child{min-width:140px}
+  .cult.flete td:first-child small{max-width:260px}
   #summary{grid-template-columns:repeat(3,1fr)}
   .kpi{cursor:default}
   .kpi small{display:block;font-size:10px;color:var(--mute);margin-top:1px}

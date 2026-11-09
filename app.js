@@ -39,14 +39,19 @@
     cosecha: { titulo: '% del área cosechada (estimado)', valor: r => (r ? r.cosechado_pct : null), rango: [0, 100], suf: ' %' },
     ndvi: { titulo: 'NDVI de la última semana', valor: r => (r ? r.ndvi_p50 : null), rango: [0.15, 0.9], dec: 2 },
     lluvia: { titulo: 'Lluvia de los últimos 15 días (mm)', valor: (r, c) => (c ? c.api_15_mm : null), rango: [0, 120], suf: ' mm', porLocalidad: true },
+    // flete: costo por tonelada a la terminal elegida (o a la más barata), directo o pasando por un acopio propio
+    flete: { titulo: 'Flete a puerto ($/tn)', valor: (r, c, f) => (f ? f.costo_mejor_tn : null), rango: () => rangoFlete, pesos: true, porLocalidad: true,
+      texto: (v, r, f) => (v == null ? 'sin ruta' : `$ ${fmt(v)}/tn` + (f && f.modo === 'acopio' ? ' · vía acopio' : '')) },
   };
+  let rangoFlete = [5000, 60000];
+  const rangoDe = modo => (typeof MODOS[modo].rango === 'function' ? MODOS[modo].rango() : MODOS[modo].rango);
   function colorSeq(v, [a, b]) {
     if (v == null || !isFinite(v)) return SIN_DATO;
     const t = Math.max(0, Math.min(1, (v - a) / (b - a)));
     return SEQ[Math.min(SEQ.length - 1, Math.floor(t * SEQ.length))];
   }
-  const colorModo = (modo, v) => (MODOS[modo].color ? MODOS[modo].color(v) : colorSeq(v, MODOS[modo].rango));
-  const textoModo = (modo, v, r) => (MODOS[modo].texto ? MODOS[modo].texto(v, r) : (v == null ? 'sin dato' : fmt(v, MODOS[modo].dec || 0) + (MODOS[modo].suf || '')));
+  const colorModo = (modo, v) => (MODOS[modo].color ? MODOS[modo].color(v) : colorSeq(v, rangoDe(modo)));
+  const textoModo = (modo, v, r, f) => (MODOS[modo].texto ? MODOS[modo].texto(v, r, f) : (v == null ? 'sin dato' : fmt(v, MODOS[modo].dec || 0) + (MODOS[modo].suf || '')));
 
   if (!CFG.supabaseUrl || !CFG.supabaseAnonKey || !window.supabase) {
     document.body.innerHTML = '<p style="padding:20px;font-family:sans-serif">Falta config.js (supabaseUrl / supabaseAnonKey).</p>';
@@ -56,8 +61,9 @@
 
   // ---------- estado ----------
   let me = null, map = null, capa = null;
-  const S = { camp: null, cultivo: 'trigo', modo: 'estado', prov: '', deleg: '', texto: '', orden: 'valor', sel: null };
+  const S = { camp: null, cultivo: 'trigo', modo: 'estado', prov: '', deleg: '', texto: '', orden: 'valor', sel: null, destino: '' };
   let campanias = [], locs = new Map(), mapa = new Map(), clima = new Map(), oficial = new Map(), runs = [];
+  let destinos = new Map(), fleteRes = new Map(), fleteDest = new Map(), tarifa = null, capaDest = null;   // #10 flete
   const charts = {}, marcadores = new Map(), cacheDet = new Map();
 
   let toastTimer = null;
@@ -96,7 +102,44 @@
     $('#fProv').innerHTML = '<option value="">Todas</option>' + provs.map(p => `<option>${esc(p)}</option>`).join('');
     pintarDelegaciones();
     pintarWorker();
+    await cargarFlete();
   }
+  // ---------- flete (#10): rutas por camino y costo por tonelada; si la base todavía no lo tiene, el modo queda sin datos ----------
+  async function cargarFlete() {
+    try {
+      const [d, r, t] = await Promise.all([
+        sb.from('destinos').select('id,tipo,nombre,empresa,localidad,provincia,lat,lon').eq('activo', true).order('nombre'),
+        todas(() => sb.from('flete_resumen').select('dept_id,acopio_cercano_id,km_acopio,km_tierra_acopio,costo_acopio_tn,terminal_id,modo,acopio_via_id,km_mejor,costo_mejor_tn').order('dept_id')),
+        sb.from('tarifas_flete').select('fuente,cargado_at').limit(1),
+      ]);
+      if (d.error) throw d.error;
+      destinos = new Map((d.data || []).map(x => [x.id, x]));
+      fleteRes = new Map(r.map(x => [x.dept_id, x]));
+      tarifa = t.data && t.data[0] || null;
+    } catch (e) { destinos = new Map(); fleteRes = new Map(); tarifa = null; console.warn('flete', e); }
+    const ts = [...destinos.values()].filter(x => x.tipo === 'terminal');
+    if (S.destino && !destinos.has(S.destino)) S.destino = '';
+    $('#fDestino').innerHTML = '<option value="">La terminal más barata</option>' + ts.map(x => `<option value="${esc(x.id)}" ${x.id === S.destino ? 'selected' : ''}>${esc(x.empresa + ' · ' + x.nombre.replace(/^.*?\| ?/, ''))}</option>`).join('');
+    if (S.destino) await cargarFleteDestino();
+    calcRangoFlete();
+  }
+  async function cargarFleteDestino() {
+    fleteDest = new Map();
+    if (!S.destino) return;
+    const filas = await todas(() => sb.from('flete_localidad').select('dept_id,km_directo,km_tierra_directo,costo_directo_tn,acopio_id,km_a_acopio,km_acopio_terminal,costo_via_acopio_tn,mejor,costo_mejor_tn').eq('terminal_id', S.destino).order('dept_id'));
+    fleteDest = new Map(filas.map(x => [x.dept_id, { dept_id: x.dept_id, terminal_id: S.destino, modo: x.mejor, acopio_via_id: x.mejor === 'acopio' ? x.acopio_id : null,
+      km_mejor: x.mejor === 'acopio' ? Number(x.km_a_acopio) + Number(x.km_acopio_terminal) : x.km_directo, costo_mejor_tn: x.costo_mejor_tn, km_tierra: x.km_tierra_directo }]));
+  }
+  // escala del mapa: percentiles 5–95 de los costos que se ven (las tarifas cambian con la inflación)
+  function calcRangoFlete() {
+    const v = [...(S.destino ? fleteDest : fleteRes).values()].map(x => Number(x.costo_mejor_tn)).filter(isFinite).sort((a, b) => a - b);
+    if (v.length < 2) return;
+    const q = p => v[Math.min(v.length - 1, Math.floor(p * v.length))], r = x => Math.round(x / 1000) * 1000;
+    rangoFlete = [r(q(0.05)), Math.max(r(q(0.05)) + 1000, r(q(0.95)))];
+  }
+  const fleteDe = id => (S.destino ? fleteDest : fleteRes).get(id);
+  const nomDest = id => { const d = destinos.get(id); return d ? (d.tipo === 'terminal' ? `${d.empresa} · ${d.nombre.replace(/^.*?\| ?/, '')}` : d.nombre) : '—'; };
+  const CAMION_TN = 28;
   async function cargarCampania() {
     document.body.classList.add('cargando');
     try {
@@ -141,7 +184,7 @@
       && (!t || normTxt(l.nombre + ' ' + l.departamento + ' ' + l.delegacion).includes(t)));
   }
   const filaDe = (id, cultivo = S.cultivo) => (mapa.get(id) || {})[cultivo];
-  const valorDe = (l, modo = S.modo) => MODOS[modo].valor(filaDe(l.dept_id), clima.get(l.dept_id));
+  const valorDe = (l, modo = S.modo) => MODOS[modo].valor(filaDe(l.dept_id), clima.get(l.dept_id), fleteDe(l.dept_id));
   const conCultivo = l => !!filaDe(l.dept_id) || MODOS[S.modo].porLocalidad;
 
   // ---------- mapa ----------
@@ -150,6 +193,17 @@
     // Teselas estándar de OpenStreetMap (las de CARTO empezaron a pedir API key). Mismo proveedor que el Tablero Logístico.
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' }).addTo(map);
     capa = L.layerGroup().addTo(map);
+    capaDest = L.layerGroup().addTo(map);
+  }
+  // acopios (cuadrado) y terminales (rombo) en el modo flete
+  function pintarDestinos() {
+    capaDest.clearLayers();
+    if (S.modo !== 'flete') return;
+    for (const d of destinos.values()) {
+      const t = d.tipo === 'terminal', elegido = d.id === S.destino;
+      const icon = L.divIcon({ className: 'dest ' + d.tipo + (elegido ? ' elegido' : ''), iconSize: t ? [14, 14] : [12, 12], html: '' });
+      L.marker([d.lat, d.lon], { icon, keyboard: false, zIndexOffset: 1000 }).bindTooltip(`${t ? 'Terminal' : 'Acopio'}: ${esc(nomDest(d.id))}`, { direction: 'top' }).addTo(capaDest);
+    }
   }
   function radio(l) {
     const r = filaDe(l.dept_id);
@@ -164,20 +218,23 @@
       const m = L.circleMarker([l.lat, l.lon], { radius: tiene ? radio(l) : 3, color: '#fcfcfb', weight: 2, fillColor: tiene ? colorModo(S.modo, v) : SIN_DATO,
         fillOpacity: tiene ? 0.92 : 0.5, opacity: 1 });
       m.bindTooltip(() => { const d = document.createElement('div'); d.className = 'loc-tip'; d.append(l.nombre);
-        const s = document.createElement('small'); s.textContent = `${tiene ? textoModo(S.modo, v, filaDe(l.dept_id)) : 'sin ' + CUL[S.cultivo].nombre.toLowerCase()} · ${l.provincia}`; d.append(s); return d; }, { direction: 'top', sticky: true });
+        const s = document.createElement('small'); s.textContent = `${tiene ? textoModo(S.modo, v, filaDe(l.dept_id), fleteDe(l.dept_id)) : 'sin ' + CUL[S.cultivo].nombre.toLowerCase()} · ${l.provincia}`; d.append(s); return d; }, { direction: 'top', sticky: true });
       m.on('click', () => seleccionar(l.dept_id, false));
       m.addTo(capa); marcadores.set(l.dept_id, m);
     }
-    pintarLeyenda();
+    pintarLeyenda(); pintarDestinos();
   }
   function pintarLeyenda() {
-    const md = MODOS[S.modo];
+    const md = MODOS[S.modo], rg = rangoDe(S.modo);
     let h = `<b>${esc(md.titulo)}</b>`;
     if (S.modo === 'estado') h += ESTADOS.map((e, i) => `<div class="it"><i class="sw" style="background:${RAMPA[i]}"></i>${esc(e.label)}</div>`).join('');
-    else h += `<div class="grad" style="background:linear-gradient(90deg,${SEQ.join(',')})"></div><div class="esc"><span>${fmt(md.rango[0], md.dec || 0)}</span><span>${fmt(md.rango[1], md.dec || 0)}${esc(md.suf || '')}</span></div>`;
+    else h += `<div class="grad" style="background:linear-gradient(90deg,${SEQ.join(',')})"></div><div class="esc"><span>${md.pesos ? '$ ' : ''}${fmt(rg[0], md.dec || 0)}</span><span>${md.pesos ? '$ ' : ''}${fmt(rg[1], md.dec || 0)}${esc(md.suf || '')}</span></div>`;
+    if (S.modo === 'flete') h += '<div class="it"><i class="dest acopio"></i>Acopio propio</div><div class="it"><i class="dest terminal"></i>Terminal portuaria</div>';
     h += `<div class="it"><i class="sw" style="background:${SIN_DATO}"></i>Sin dato</div>`;
     const sinPred = S.modo === 'estado' && ![...mapa.values()].some(v => v[S.cultivo] && v[S.cultivo].estado);
-    h += `<small>${sinPred ? 'Sin predicción todavía: estado según la madurez satelital. ' : ''}${md.porLocalidad ? 'Tamaño fijo.' : `Tamaño: hectáreas de ${esc(CUL[S.cultivo].nombre.toLowerCase())} en el círculo de 3 km.`}</small>`;
+    const notaFlete = S.modo !== 'flete' ? '' : !fleteRes.size ? 'Todavía no hay rutas calculadas. ' :
+      `${S.destino ? 'A ' + esc(nomDest(S.destino)) : 'A la terminal más barata'}, directo o vía acopio. Tarifa: ${esc(tarifa && tarifa.fuente || '—')}${tarifa ? ' (' + fdiaL(tarifa.cargado_at) + ')' : ''}. `;
+    h += `<small>${sinPred ? 'Sin predicción todavía: estado según la madurez satelital. ' : ''}${notaFlete}${md.porLocalidad ? 'Tamaño fijo.' : `Tamaño: hectáreas de ${esc(CUL[S.cultivo].nombre.toLowerCase())} en el círculo de 3 km.`}</small>`;
     $('#leyenda').innerHTML = h;
   }
 
@@ -210,16 +267,17 @@
     const ord = { nombre: (a, b) => a.nombre.localeCompare(b.nombre), ha: (a, b) => ((filaDe(b.dept_id) || {}).ha || 0) - ((filaDe(a.dept_id) || {}).ha || 0),
       valor: (a, b) => ((valorDe(b) ?? -1e9) - (valorDe(a) ?? -1e9)) || a.nombre.localeCompare(b.nombre) }[S.orden];
     con.sort(ord);
-    $('#filtroInfo').textContent = `${con.length} de ${lista.length} localidades con ${CUL[S.cultivo].nombre.toLowerCase()}${md.porLocalidad ? ' (lluvia: todas)' : ''}`;
+    $('#filtroInfo').textContent = `${con.length} de ${lista.length} localidades con ${CUL[S.cultivo].nombre.toLowerCase()}${md.porLocalidad ? ` (${S.modo === 'flete' ? 'flete' : 'lluvia'}: todas)` : ''}`;
     const max = 400;
     $('#list').innerHTML = con.length ? con.slice(0, max).map(l => {
       const v = valorDe(l), r = filaDe(l.dept_id);
       return `<button type="button" class="row ${S.sel === l.dept_id ? 'sel' : ''}" data-id="${l.dept_id}"><i class="dot" style="background:${colorModo(S.modo, v)}"></i>
         <span class="rn">${esc(l.nombre)}<small>${esc(l.provincia)} · ${esc(l.delegacion || 'sin delegación')}</small></span>
-        <span class="rv">${esc(textoModo(S.modo, v, r))}<small>${r && r.ha ? fmt(r.ha) + ' ha' : ''}</small></span></button>`;
+        <span class="rv">${esc(textoModo(S.modo, v, r, fleteDe(l.dept_id)))}<small>${S.modo === 'flete' ? esc(subFlete(fleteDe(l.dept_id))) : r && r.ha ? fmt(r.ha) + ' ha' : ''}</small></span></button>`;
     }).join('') + (con.length > max ? `<p class="cap">Se muestran ${max}; afiná el filtro para ver el resto.</p>` : '')
       : `<div class="vacio">No hay localidades con ${esc(CUL[S.cultivo].nombre.toLowerCase())} en este filtro.</div>`;
   }
+  const subFlete = f => (!f ? '' : `${fmt(f.km_mejor)} km · ${S.destino ? '' : nomDest(f.terminal_id)}`.replace(/ · $/, ''));
   function render() {
     const lista = filtradas();
     renderResumen(lista); renderLista(lista); pintarMapa(lista);
@@ -285,12 +343,46 @@
       <div class="kvs"><div><b>${fmt(cl && cl.api_7_mm)}</b><span>mm 7 días</span></div><div><b>${fmt(cl && cl.api_15_mm)}</b><span>mm 15 días</span></div>
       <div><b>${fmt(cl && cl.days_since_rain)}</b><span>días sin lluvia</span></div><div><b>${cl && cl.soil_water_pct != null ? fmt(cl.soil_water_pct) + ' %' : '—'}</b><span>agua en el suelo</span></div></div>
       <div class="chart-box s"><canvas id="cLluvia" aria-label="Lluvia diaria"></canvas></div>
-      <p class="cap">Lluvia diaria de los últimos 75 días (NASA POWER) al ${fdiaL(cl && cl.fecha)}.</p>`;
+      <p class="cap">Lluvia diaria de los últimos 75 días (NASA POWER) al ${fdiaL(cl && cl.fecha)}.</p>
+      <h3>Flete</h3><div id="dFlete"><div class="vacio">Cargando rutas…</div></div>`;
     $('#bCerrarDet').addEventListener('click', () => { S.sel = null; el.hidden = true; document.querySelectorAll('#list .row.sel').forEach(x => x.classList.remove('sel')); });
     let d;
     try { d = await datosDetalle(id); } catch (e) { toast('No se pudieron leer las series: ' + (e.message || e), 'err'); return; }
     if (S.sel !== id) return;
     dibujarNdvi(d, c); dibujarAvance(d, c, r, of); dibujarLluvia(d); tablaAvance(d, c, of);
+    renderFlete(id, c).catch(e => { const el2 = $('#dFlete'); if (el2) el2.innerHTML = `<div class="vacio">No se pudo leer el flete: ${esc(e.message || e)}</div>`; });
+  }
+  const GRANO = { trigo: 'trigo', maiz_temprano: 'maiz', maiz_tardio: 'maiz', soja_1ra: 'soja', soja_2da: 'soja' };
+  async function datosFlete(id) {
+    const k = 'flete|' + id;
+    if (cacheDet.has(k)) return cacheDet.get(k);
+    const [t, cr] = await Promise.all([
+      sb.from('flete_localidad').select('terminal_id,km_directo,km_tierra_directo,costo_directo_tn,acopio_id,km_a_acopio,km_tierra_a_acopio,km_acopio_terminal,costo_via_acopio_tn,mejor,costo_mejor_tn').eq('dept_id', id).order('costo_mejor_tn'),
+      sb.from('condiciones_recibo').select('planta,terminal_id,soja,maiz,trigo,sorgo,girasol,fuente,fecha'),
+    ]);
+    if (t.error) throw t.error;
+    const d = { term: t.data || [], cond: cr.error ? [] : (cr.data || []) };
+    cacheDet.set(k, d); return d;
+  }
+  async function renderFlete(id, c) {
+    const d = await datosFlete(id), el = $('#dFlete'), res = fleteRes.get(id);
+    if (!el || S.sel !== id) return;
+    if (!d.term.length) { el.innerHTML = '<div class="vacio">Todavía no hay rutas calculadas para esta localidad.</div>'; return; }
+    const grano = GRANO[c.id], ver = d.term.slice(0, 6);
+    if (S.destino && !ver.some(x => x.terminal_id === S.destino)) { const e = d.term.find(x => x.terminal_id === S.destino); if (e) ver.push(e); }
+    const camion = v => (v == null ? '—' : '$\u00a0' + fmt(v * CAMION_TN));
+    const cond = tid => d.cond.filter(x => x.terminal_id === tid && x[grano]).map(x => `${x.planta}: ${x[grano]}`).join(' · ');
+    const cfecha = d.cond.map(x => x.fecha).filter(Boolean).sort().pop();
+    el.innerHTML = `<div class="kvs"><div><b>${res ? '$\u00a0' + fmt(res.costo_mejor_tn) : '—'}</b><span>$/tn mejor opción</span></div><div><b>${res ? camion(res.costo_mejor_tn) : '—'}</b><span>por camión (${CAMION_TN} t)</span></div>
+      <div><b>${res && res.km_acopio != null ? fmt(res.km_acopio) + ' km' : '—'}</b><span>al acopio más cercano</span></div><div><b>${res && res.costo_acopio_tn != null ? '$\u00a0' + fmt(res.costo_acopio_tn) : '—'}</b><span>$/tn a ese acopio</span></div></div>
+      <p class="cap">Acopio más cercano por camino: ${esc(res ? nomDest(res.acopio_cercano_id) : '—')}${res && res.km_tierra_acopio > 0 ? ` (${fmt(res.km_tierra_acopio, 1)} km de tierra)` : ''}.</p>
+      <div class="tabla-scroll"><table class="cult flete"><tr><th>Terminal</th><th>Directo</th><th>Vía acopio</th><th>Mejor $/tn</th></tr>
+      ${ver.map(x => { const cc = cond(x.terminal_id); return `<tr class="${x.terminal_id === S.destino ? 'sel' : ''}"><td>${esc(nomDest(x.terminal_id))}${cc ? `<small title="${esc(cc)}">Recibo ${esc(c.nombre.split(' ')[0].toLowerCase())}: ${esc(cc.length > 90 ? cc.slice(0, 88) + '…' : cc)}</small>` : ''}</td>
+        <td>$&nbsp;${fmt(x.costo_directo_tn)}<small>${fmt(x.km_directo)} km${x.km_tierra_directo > 0 ? ' · ' + fmt(x.km_tierra_directo, 1) + ' tierra' : ''}</small></td>
+        <td>${x.costo_via_acopio_tn == null ? '—' : '$\u00a0' + fmt(x.costo_via_acopio_tn)}<small>${x.acopio_id ? esc(String((destinos.get(x.acopio_id) || {}).nombre || x.acopio_id).split(' | ')[0]) + ' · ' + fmt(x.km_a_acopio) + ' + ' + fmt(x.km_acopio_terminal) + ' km' : ''}</small></td>
+        <td><b>$&nbsp;${fmt(x.costo_mejor_tn)}</b><small>${x.mejor === 'acopio' ? 'vía acopio' : 'directo'}</small><small>${camion(x.costo_mejor_tn)}/camión</small></td></tr>`; }).join('')}
+      </table></div>
+      <p class="cap">Distancia por camino (OSRM, separa asfalto y tierra) desde el centro de la localidad. Vía acopio = tarifa hasta el acopio + tarifa del acopio a la terminal. Tarifa por tonelada según km: ${esc(tarifa && tarifa.fuente || '—')}${tarifa ? ' (cargada ' + fdiaL(tarifa.cargado_at) + ')' : ''}.${cfecha ? ` Condiciones de recibo al ${fdiaL(cfecha)}.` : ''}</p>`;
   }
 
   // ---------- gráficos (una escala por gráfico; tooltip con todas las series en la misma fecha) ----------
@@ -369,7 +461,7 @@
   const infElegidos = () => { const ids = new Set([...document.querySelectorAll('#infLista input:checked')].map(i => Number(i.value))); return infLista.filter(l => ids.has(l.dept_id)); };
   function filaInforme(l) {
     const r = filaDe(l.dept_id) || {}, cl = clima.get(l.dept_id) || {}, of = oficial.get(CUL[S.cultivo].magyp + '|' + l.delegacion);
-    return { l, r, cl, of: of && of.cosecha };
+    return { l, r, cl, of: of && of.cosecha, f: fleteDe(l.dept_id) || {} };
   }
   function pngDe(cfg) {
     const cv = document.createElement('canvas'); cv.width = 900; cv.height = 320;
@@ -404,12 +496,12 @@ table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:4px 5px;b
 <h1>CropNDVI Monitor · ${esc(c.nombre)} · campaña ${esc(S.camp)}</h1>
 <div class="meta">Generado ${esc(new Date().toLocaleString('es-AR'))} · ${esc(me?.email || '')} · Filtro: ${esc(descFiltro())}</div>
 <div class="k"><div><b>${fmt(k.n)}</b>localidades</div><div><b>${fmt(k.ha)}</b>ha relevadas</div><div><b>${fmt(k.ndvi, 2)}</b>NDVI medio</div><div><b>${k.mad == null ? '—' : fmt(k.mad) + ' %'}</b>maduro</div><div><b>${k.cos == null ? '—' : fmt(k.cos) + ' %'}</b>cosechado (estimado)</div><div><b>${k.ofp == null ? '—' : fmt(k.ofp) + ' %'}</b>cosechado MAGyP</div></div>
-<h2>Detalle por localidad</h2><div class="tw"><table><tr><th>Localidad</th><th>Provincia</th><th>Delegación</th><th class="n">Ha</th><th>Estado</th><th class="n">NDVI</th><th class="n">Maduro</th><th class="n">Cosechado est.</th><th>50 % cosechado</th><th>90 % cosechado</th><th class="n">Confianza</th><th class="n">MAGyP deleg.</th><th class="n">Lluvia 15 d</th></tr>
-${filas.map(({ l, r, cl, of }) => `<tr><td>${esc(l.nombre)}</td><td>${esc(l.provincia)}</td><td>${esc(l.delegacion || '—')}</td><td class="n">${fmt(r.ha)}</td><td>${esc(r.estado ? MODOS.estado.texto(MODOS.estado.valor(r), r) : '—')}</td>
+<h2>Detalle por localidad</h2><div class="tw"><table><tr><th>Localidad</th><th>Provincia</th><th>Delegación</th><th class="n">Ha</th><th>Estado</th><th class="n">NDVI</th><th class="n">Maduro</th><th class="n">Cosechado est.</th><th>50 % cosechado</th><th>90 % cosechado</th><th class="n">Confianza</th><th class="n">MAGyP deleg.</th><th class="n">Lluvia 15 d</th><th class="n">Flete $/tn</th><th>Terminal</th></tr>
+${filas.map(({ l, r, cl, of, f }) => `<tr><td>${esc(l.nombre)}</td><td>${esc(l.provincia)}</td><td>${esc(l.delegacion || '—')}</td><td class="n">${fmt(r.ha)}</td><td>${esc(r.estado ? MODOS.estado.texto(MODOS.estado.valor(r), r) : '—')}</td>
 <td class="n">${fmt(r.ndvi_p50, 2)}</td><td class="n">${r.fin_ciclo_pct == null ? '—' : fmt(r.fin_ciclo_pct) + ' %'}</td><td class="n">${r.cosechado_pct == null ? '—' : fmt(r.cosechado_pct) + ' %'}</td>
 <td>${banda(r.fecha_50, r.fecha_50_desde, r.fecha_50_hasta)}</td><td>${banda(r.fecha_90, r.fecha_90_desde, r.fecha_90_hasta)}</td><td class="n">${r.confianza == null ? '—' : fmt(r.confianza * 100) + ' %'}</td>
-<td class="n">${of ? fmt(of.cosechado_pct) + ' % al ' + fdia(of.fecha) : '—'}</td><td class="n">${fmt(cl.api_15_mm)} mm</td></tr>`).join('')}</table></div>
-<p class="nota">Hectáreas: superficie del cultivo dentro de un círculo de 3 km alrededor de cada localidad (mapa INTA en campañas publicadas; clasificador satelital en la campaña en curso). NDVI: Sentinel-2, solo píxeles del cultivo. Cosechado estimado y fechas: modelo calibrado contra el avance oficial del MAGyP; la banda combina el clima de años anteriores y el error medido. MAGyP: último informe semanal de la delegación. Lluvia: NASA POWER.</p>
+<td class="n">${of ? fmt(of.cosechado_pct) + ' % al ' + fdia(of.fecha) : '—'}</td><td class="n">${fmt(cl.api_15_mm)} mm</td><td class="n">${f.costo_mejor_tn == null ? '—' : '$ ' + fmt(f.costo_mejor_tn)}</td><td>${f.terminal_id ? esc(nomDest(f.terminal_id)) + (f.modo === 'acopio' ? ' (vía acopio)' : '') : '—'}</td></tr>`).join('')}</table></div>
+<p class="nota">Hectáreas: superficie del cultivo dentro de un círculo de 3 km alrededor de cada localidad (mapa INTA en campañas publicadas; clasificador satelital en la campaña en curso). NDVI: Sentinel-2, solo píxeles del cultivo. Cosechado estimado y fechas: modelo calibrado contra el avance oficial del MAGyP; la banda combina el clima de años anteriores y el error medido. MAGyP: último informe semanal de la delegación. Lluvia: NASA POWER. Flete: distancia por camino a ${S.destino ? esc(nomDest(S.destino)) : 'la terminal más barata'} (directo o vía acopio) con la tarifa ${esc(tarifa && tarifa.fuente || '—')}.</p>
 ${det.map(x => `<div class="loc"><h2>${esc(x.l.nombre)} · ${esc(x.l.provincia)} · delegación ${esc(x.l.delegacion || '—')}</h2><img src="${x.n}" alt="NDVI"><img src="${x.a}" alt="Avance"></div>`).join('')}
 </body></html>`;
     try { w.document.open(); w.document.write(html); w.document.close(); } catch (e) { toast('No se pudo mostrar el informe: ' + e.message, 'err'); }
@@ -419,10 +511,13 @@ ${det.map(x => `<div class="loc"><h2>${esc(x.l.nombre)} · ${esc(x.l.provincia)}
     const num = (v, d = 1) => (v == null || v === '' ? '' : Number(v).toFixed(d).replace('.', ','));
     const cel = v => { const t = String(v ?? ''); return /[;"\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
     const cab = ['Localidad', 'Provincia', 'Departamento', 'Delegacion MAGyP', 'Cultivo', 'Campania', 'Ha (circulo 3 km)', 'Fuente mascara', 'Estado', 'NDVI', 'Semana NDVI',
-      'Maduro %', 'Cosechado estimado %', 'Fecha 50%', 'Fecha 50% desde', 'Fecha 50% hasta', 'Fecha 90%', 'Fecha 90% desde', 'Fecha 90% hasta', 'Confianza', 'MAGyP cosechado %', 'MAGyP fecha', 'Lluvia 7 d mm', 'Lluvia 15 d mm', 'Agua en suelo %'];
-    const filas = lista.map(filaInforme).map(({ l, r, cl, of }) => [l.nombre, l.provincia, l.departamento || '', l.delegacion || '', CUL[S.cultivo].nombre, S.camp, num(r.ha, 0), r.fuente || '', r.estado || '',
+      'Maduro %', 'Cosechado estimado %', 'Fecha 50%', 'Fecha 50% desde', 'Fecha 50% hasta', 'Fecha 90%', 'Fecha 90% desde', 'Fecha 90% hasta', 'Confianza', 'MAGyP cosechado %', 'MAGyP fecha', 'Lluvia 7 d mm', 'Lluvia 15 d mm', 'Agua en suelo %',
+      'Flete $/tn', 'Flete $/camion 28 t', 'Terminal', 'Modo flete', 'Acopio via', 'Km flete', 'Acopio mas cercano', 'Km al acopio', 'Km de tierra al acopio'];
+    const filas = lista.map(filaInforme).map(({ l, r, cl, of, f }) => [l.nombre, l.provincia, l.departamento || '', l.delegacion || '', CUL[S.cultivo].nombre, S.camp, num(r.ha, 0), r.fuente || '', r.estado || '',
       num(r.ndvi_p50, 3), r.semana || '', num(r.fin_ciclo_pct), num(r.cosechado_pct), r.fecha_50 || '', r.fecha_50_desde || '', r.fecha_50_hasta || '', r.fecha_90 || '', r.fecha_90_desde || '', r.fecha_90_hasta || '',
-      num(r.confianza, 2), of ? num(of.cosechado_pct) : '', of ? of.fecha : '', num(cl.api_7_mm), num(cl.api_15_mm), num(cl.soil_water_pct, 0)]);
+      num(r.confianza, 2), of ? num(of.cosechado_pct) : '', of ? of.fecha : '', num(cl.api_7_mm), num(cl.api_15_mm), num(cl.soil_water_pct, 0),
+      num(f.costo_mejor_tn, 0), f.costo_mejor_tn == null ? '' : num(f.costo_mejor_tn * CAMION_TN, 0), f.terminal_id ? nomDest(f.terminal_id) : '', f.modo || '', f.acopio_via_id ? nomDest(f.acopio_via_id) : '',
+      num(f.km_mejor), (fleteRes.get(l.dept_id) || {}).acopio_cercano_id ? nomDest(fleteRes.get(l.dept_id).acopio_cercano_id) : '', num((fleteRes.get(l.dept_id) || {}).km_acopio), num((fleteRes.get(l.dept_id) || {}).km_tierra_acopio)]);
     const csv = '﻿' + [cab, ...filas].map(f => f.map(cel).join(';')).join('\r\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -450,7 +545,12 @@ ${det.map(x => `<div class="loc"><h2>${esc(x.l.nombre)} · ${esc(x.l.provincia)}
   // ---------- eventos ----------
   $('#fCamp').addEventListener('change', e => { S.camp = e.target.value; S.sel = null; $('#detail').hidden = true; cargarCampania().catch(err => toast(err.message || String(err), 'err')); });
   $('#fCultivo').addEventListener('click', e => { const b = e.target.closest('button[data-c]'); if (!b) return; S.cultivo = b.dataset.c; pintarCultivos(); render(); });
-  $('#fModo').addEventListener('change', e => { S.modo = e.target.value; render(); });
+  $('#fModo').addEventListener('change', e => { S.modo = e.target.value; $('#lDestino').hidden = S.modo !== 'flete'; render(); });
+  $('#fDestino').addEventListener('change', async e => {
+    S.destino = e.target.value;
+    try { await cargarFleteDestino(); } catch (err) { toast(err.message || String(err), 'err'); }
+    calcRangoFlete(); render();
+  });
   $('#fProv').addEventListener('change', e => { S.prov = e.target.value; pintarDelegaciones(); render(); });
   $('#fDeleg').addEventListener('change', e => { S.deleg = e.target.value; render(); });
   $('#filtro').addEventListener('input', e => { S.texto = e.target.value; render(); });
