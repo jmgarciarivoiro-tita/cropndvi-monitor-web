@@ -63,7 +63,7 @@
   let me = null, map = null, capa = null;
   const S = { camp: null, cultivo: 'trigo', modo: 'estado', prov: '', deleg: '', texto: '', orden: 'valor', sel: null, destino: '' };
   let campanias = [], locs = new Map(), mapa = new Map(), clima = new Map(), oficial = new Map(), runs = [];
-  let tarifas = [], destinos = new Map(), fleteRes = new Map(), fleteDest = new Map(), tarifa = null, capaDest = null;   // #10 flete
+  let acopTerm = new Map(), tarifas = [], destinos = new Map(), fleteRes = new Map(), fleteDest = new Map(), tarifa = null, capaDest = null;   // #10 flete
   const charts = {}, marcadores = new Map(), cacheDet = new Map();
 
   let toastTimer = null;
@@ -107,17 +107,20 @@
   // ---------- flete (#10): rutas por camino y costo por tonelada; si la base todavía no lo tiene, el modo queda sin datos ----------
   async function cargarFlete() {
     try {
-      const [d, r, t] = await Promise.all([
+      const [d, r, t, rt] = await Promise.all([
         sb.from('destinos').select('id,tipo,nombre,empresa,localidad,provincia,lat,lon').eq('activo', true).order('nombre'),
         todas(() => sb.from('flete_resumen').select('dept_id,acopio_cercano_id,km_acopio,km_tierra_acopio,costo_acopio_tn,terminal_id,modo,acopio_via_id,km_mejor,costo_mejor_tn').order('dept_id')),
         todas(() => sb.from('tarifas_flete').select('km,tarifa_tn,fuente,cargado_at').order('km')),
+        todas(() => sb.from('rutas').select('origen_id,destino_id,km_total').eq('origen_tipo', 'acopio').order('origen_id')),
       ]);
+      acopTerm = new Map();
+      for (const x of rt) if (x.km_total != null) { if (!acopTerm.has(x.origen_id)) acopTerm.set(x.origen_id, []); acopTerm.get(x.origen_id).push({ t: x.destino_id, km: Number(x.km_total) }); }
       if (d.error) throw d.error;
       destinos = new Map((d.data || []).map(x => [x.id, x]));
       fleteRes = new Map(r.map(x => [x.dept_id, x]));
       tarifas = t.map(x => [Number(x.km), Number(x.tarifa_tn)]).sort((a, b) => a[0] - b[0]);
       tarifa = t[0] || null;
-    } catch (e) { destinos = new Map(); fleteRes = new Map(); tarifa = null; console.warn('flete', e); }
+    } catch (e) { destinos = new Map(); fleteRes = new Map(); acopTerm = new Map(); tarifa = null; console.warn('flete', e); }
     const ts = [...destinos.values()].filter(x => x.tipo === 'terminal');
     if (S.destino && !destinos.has(S.destino)) S.destino = '';
     $('#fDestino').innerHTML = '<option value="">La terminal más barata</option>' + ts.map(x => `<option value="${esc(x.id)}" ${x.id === S.destino ? 'selected' : ''}>${esc(x.empresa + ' · ' + x.nombre.replace(/^.*?\| ?/, ''))}</option>`).join('');
@@ -393,9 +396,18 @@
       const dif = Math.abs(Number(x.costo_via_acopio_tn) - Number(x.costo_directo_tn));
       return `<p class="fl-dif">${x.mejor === 'acopio' ? 'Vía acopio' : 'Directo'} ahorra $&nbsp;${fmt(dif)}/tn (${camion(dif)} por camión).</p>`;
     };
-    el.innerHTML = `<div class="kvs"><div><b>${res ? '$\u00a0' + fmt(res.costo_mejor_tn) : '—'}</b><span>$/tn mejor opción</span></div><div><b>${res ? camion(res.costo_mejor_tn) : '—'}</b><span>por camión (${CAMION_TN} t)</span></div>
-      <div><b>${res && res.km_acopio != null ? fmt(res.km_acopio) + ' km' : '—'}</b><span>al acopio más cercano</span></div><div><b>${res && res.costo_acopio_tn != null ? '$\u00a0' + fmt(res.costo_acopio_tn) : '—'}</b><span>$/tn a ese acopio</span></div></div>
-      <p class="cap">Acopio más cercano por camino: ${esc(res ? nomDest(res.acopio_cercano_id) : '—')}${res && res.km_tierra_acopio > 0 ? ` (${fmt(res.km_tierra_acopio, 1)} km de tierra)` : ''}.</p>
+    // pasando por el acopio más cercano: tramo al acopio + tramo del acopio a la terminal más barata (o a la elegida)
+    const ac = res && res.acopio_cercano_id, t1 = res && res.costo_acopio_tn != null ? Number(res.costo_acopio_tn) : null;
+    const t2 = (acopTerm.get(ac) || []).filter(x => destinos.has(x.t) && (!S.destino || x.t === S.destino))
+      .map(x => ({ ...x, tn: tarifaTn(x.km) })).filter(x => x.tn != null).sort((a, b) => a.tn - b.tn)[0];
+    const viaCerc = t1 != null && t2 ? t1 + t2.tn : null;
+    const $tn = v => (v == null ? '—' : '$\u00a0' + fmt(v) + '/tn');
+    el.innerHTML = `<div class="kvs kv3">
+      <div><span>Camión a puerto (mejor opción)</span><b>${res ? camion(res.costo_mejor_tn) : '—'}</b><span>${$tn(res && res.costo_mejor_tn)}</span></div>
+      <div><span>Camión al acopio más cercano</span><b>${camion(t1)}</b><span>${$tn(t1)}${res && res.km_acopio != null ? ' · ' + fmt(res.km_acopio) + ' km' : ''}</span></div>
+      <div><span>Al acopio + acopio a puerto</span><b>${camion(viaCerc)}</b><span>${$tn(viaCerc)}</span></div></div>
+      <p class="cap">Acopio más cercano por camino: ${esc(res ? nomDest(ac) : '—')}${res && res.km_acopio != null ? `, ${fmt(res.km_acopio)} km` : ''}${res && res.km_tierra_acopio > 0 ? ` (${fmt(res.km_tierra_acopio, 1)} de tierra)` : ''}.
+      ${t2 ? `Pasando por ese acopio: ${$tn(t1)} hasta el acopio + ${$tn(t2.tn)} del acopio a ${esc(nomDest(t2.t))} (${fmt(t2.km)} km) = ${$tn(viaCerc)}.` : ''} Camión de ${CAMION_TN} t.</p>
       <div class="fl-lista">${ver.map(x => { const cc = cond(x.terminal_id), via = x.costo_via_acopio_tn != null, mejorVia = x.mejor === 'acopio';
         return `<div class="fl-term ${x.terminal_id === S.destino ? 'sel' : ''}"><div class="fl-nom">${esc(nomDest(x.terminal_id))}${cc ? `<small title="${esc(cc)}">Recibo ${esc(c.nombre.split(' ')[0].toLowerCase())}: ${esc(cc.length > 90 ? cc.slice(0, 88) + '…' : cc)}</small>` : ''}</div>
         <div class="fl-ops"><div class="fl-op ${mejorVia ? '' : 'mejor'}"><span class="fl-t">Directo${mejorVia ? '' : ' · mejor'}</span><b>$&nbsp;${fmt(x.costo_directo_tn)}/tn</b><span class="fl-c">${camion(x.costo_directo_tn)} por camión</span>
