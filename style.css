@@ -170,8 +170,16 @@
   .dest.terminal{background:#eb6834;transform:rotate(45deg);width:12px;height:12px}
   .dest.elegido{box-shadow:0 0 0 3px #0d366b}
   .leyenda .it .dest{flex:none;margin:0 1px}
-  .cult.flete td:first-child{min-width:140px}
-  .cult.flete td:first-child small{max-width:260px}
+  .fl-lista{display:flex;flex-direction:column;gap:10px;margin:8px 0}
+  .fl-term{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .fl-term.sel{border-color:#0d366b;box-shadow:0 0 0 1px #0d366b}
+  .fl-nom{font-weight:600;margin-bottom:8px}.fl-nom small{display:block;font-weight:400;color:var(--mute);font-size:11px;margin-top:2px}
+  .fl-ops{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .fl-op{background:var(--bg);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:1px;border:1px solid transparent}
+  .fl-op.mejor{border-color:var(--brand2);background:#eef6f0}
+  .fl-op .fl-t{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.03em}
+  .fl-op b{font-size:16px}.fl-op .fl-c{font-size:12px}.fl-op small{color:var(--mute);font-size:11px}
+  .fl-dif{margin:6px 0 0;font-size:12px;color:var(--mute)}
   #summary{grid-template-columns:repeat(3,1fr)}
   .kpi{cursor:default}
   .kpi small{display:block;font-size:10px;color:var(--mute);margin-top:1px}
