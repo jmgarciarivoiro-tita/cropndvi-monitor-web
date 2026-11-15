@@ -111,6 +111,24 @@
 
   #modalInf{position:fixed;inset:0;background:rgba(20,30,25,.45);display:flex;align-items:center;justify-content:center;z-index:3000;padding:16px}
   #modalInf[hidden]{display:none}
+  #modalIA{position:fixed;inset:0;background:rgba(20,30,25,.45);display:flex;align-items:center;justify-content:center;z-index:3000;padding:16px}
+  #modalIA[hidden]{display:none}
+  .mbox-ia{width:min(820px,100%);height:min(86vh,900px)}
+  .ia-cab{display:flex;align-items:center;gap:10px}.ia-cab h3{flex:1}
+  .ia-estado{font-size:11.5px;padding:3px 8px;border-radius:99px;background:var(--bg);color:var(--mute)}.ia-estado.on{background:#e7f3ea;color:var(--brand)}
+  .ia-tabs{align-self:flex-start}
+  .ia-panel{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px}
+  .ia-panel[hidden]{display:none}
+  .ia-sel{font-size:12px;color:var(--mute);display:flex;gap:8px;align-items:center}
+  .ia-md{font-size:13.5px;line-height:1.55;color:var(--ink)}
+  .ia-md h4{font-size:16px;margin:4px 0 8px}.ia-md h5{font-size:14px;margin:14px 0 4px;color:var(--brand)}
+  .ia-md ul{margin:4px 0 8px;padding-left:20px}.ia-md li{margin:2px 0}.ia-md p{margin:6px 0;color:var(--ink);font-size:13.5px}
+  #iaPregunta{min-height:72px;flex:none;font:inherit;font-size:13.5px}
+  .ia-hist{display:flex;flex-direction:column;gap:10px}
+  .ia-q{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .ia-q .q{font-weight:600;margin-bottom:2px}.ia-q .m{font-size:11.5px;color:var(--mute);margin-bottom:6px}
+  .ia-q.esperando .ia-md{color:var(--mute);font-style:italic}.ia-q.error .ia-md{color:var(--r)}
+  .ia-pie{font-size:11px !important}
   .mbox-s{width:min(520px,100%)}
   .filtro-info{font-size:11.5px;color:var(--mute);margin:-2px 0 6px}
   .filtro-info:empty{display:none}
@@ -243,7 +261,8 @@
     .kvs{grid-template-columns:repeat(2,1fr)}.kvs.kv3{grid-template-columns:1fr}
     .fab{display:block;position:fixed;right:14px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:1600;font:600 13px Inter,system-ui,sans-serif;background:var(--brand);color:#fff;border:0;border-radius:999px;padding:11px 15px;box-shadow:0 4px 14px rgba(0,0,0,.3);cursor:pointer}
     .fab[hidden]{display:none}
-    #modalInf{align-items:flex-end;padding:0}
+    #modalInf,#modalIA{align-items:flex-end;padding:0}
+    .mbox-ia{height:92vh}
     .mbox{width:100%;max-height:92vh;border-radius:14px 14px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
     .mbtns{flex-wrap:wrap}.mbtns .btn{flex:1 1 auto;padding:11px}
     .toast{bottom:calc(70px + env(safe-area-inset-bottom))}

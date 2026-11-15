@@ -485,6 +485,75 @@
     el.querySelectorAll('table').forEach(x => x.remove()); el.append(t);
   }
 
+  // ---------- IA (#11): informe semanal y preguntas. La web solo lee informes e inserta preguntas; responde el worker ----------
+  // markdown mínimo y seguro: se escapa todo y solo se arman títulos, listas, negritas y párrafos
+  function md(t) {
+    const inl = x => esc(x).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    let h = '', lista = false;
+    for (const raw of String(t || '').split('\n')) {
+      const l = raw.trimEnd(), li = /^\s*[-*•]\s+(.*)/.exec(l), hd = /^(#{1,4})\s+(.*)/.exec(l);
+      if (!li && lista) { h += '</ul>'; lista = false; }
+      if (hd) h += hd[1].length === 1 ? `<h4>${inl(hd[2])}</h4>` : `<h5>${inl(hd[2])}</h5>`;
+      else if (li) { if (!lista) { h += '<ul>'; lista = true; } h += `<li>${inl(li[1])}</li>`; }
+      else if (l.trim()) h += `<p>${inl(l)}</p>`;
+    }
+    return h + (lista ? '</ul>' : '');
+  }
+  let iaInformes = [], iaPoll = null;
+  const iaFiltroTxt = () => [S.camp, CUL[S.cultivo].nombre, S.prov || 'todas las provincias', S.deleg ? 'delegación ' + S.deleg : ''].filter(Boolean).join(' · ');
+  async function abrirIA(tab) {
+    $('#modalIA').hidden = false; tabIA(tab || 'semanal');
+    $('#iaFiltroTxt').textContent = iaFiltroTxt();
+    $('#iaInforme').innerHTML = '<p class="vacio">Cargando…</p>';
+    const [inf, we] = await Promise.all([
+      sb.from('ia_informes').select('id,semana,created_at,campania,texto').order('created_at', { ascending: false }).limit(12),
+      sb.from('worker_estado').select('detalle').limit(1),
+    ]);
+    iaInformes = inf.error ? [] : (inf.data || []);
+    const vis = we.data && we.data[0] && we.data[0].detalle && we.data[0].detalle.ia_escucha;
+    const on = vis && Date.now() - new Date(vis).getTime() < 3 * 60 * 1000;
+    $('#iaEstado').className = 'ia-estado' + (on ? ' on' : '');
+    $('#iaEstado').textContent = on ? 'IA conectada' : 'IA en pausa: las preguntas quedan en cola hasta que se prenda la PC del worker';
+    $('#iaInformes').innerHTML = iaInformes.map((x, i) => `<option value="${i}">${fdiaL(x.semana)} · ${esc(x.campania)}</option>`).join('');
+    pintarInformeIA(0);
+    await pintarHistIA();
+  }
+  function pintarInformeIA(i) {
+    const x = iaInformes[i];
+    $('#iaInforme').innerHTML = x ? md(x.texto) + `<p class="cap">Generado el ${new Date(x.created_at).toLocaleString('es-AR')}.</p>`
+      : '<p class="vacio">Todavía no hay informes. El worker arma uno cada lunes a la mañana.</p>';
+  }
+  function tabIA(t) {
+    document.querySelectorAll('.ia-tabs button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.t === t)));
+    $('#iaSemanal').hidden = t !== 'semanal'; $('#iaPreguntar').hidden = t !== 'preguntar';
+  }
+  async function pintarHistIA() {
+    const r = await sb.from('ia_solicitudes').select('id,pregunta,estado,respuesta,error,campania,cultivo,provincia,delegacion,created_at').order('created_at', { ascending: false }).limit(20);
+    if (r.error) { $('#iaHist').innerHTML = `<p class="vacio">No se pudieron leer tus preguntas: ${esc(r.error.message)}</p>`; return; }
+    const filas = r.data || [];
+    $('#iaHist').innerHTML = filas.length ? filas.map(x => {
+      const esp = x.estado === 'pendiente' || x.estado === 'procesando';
+      const filtro = [x.campania, x.cultivo && CUL[x.cultivo] ? CUL[x.cultivo].nombre : x.cultivo, x.provincia, x.delegacion].filter(Boolean).join(' · ');
+      const cuerpo = esp ? `<p>${x.estado === 'procesando' ? 'Respondiendo…' : 'En cola…'}</p>` : x.estado === 'error' ? `<p>No se pudo responder: ${esc(x.error || 'error')}</p>` : md(x.respuesta);
+      return `<div class="ia-q ${esp ? 'esperando' : x.estado === 'error' ? 'error' : ''}"><div class="q">${esc(x.pregunta)}</div><div class="m">${new Date(x.created_at).toLocaleString('es-AR')}${filtro ? ' · ' + esc(filtro) : ''}</div><div class="ia-md">${cuerpo}</div></div>`;
+    }).join('') : '<p class="vacio">Todavía no hiciste preguntas.</p>';
+    clearTimeout(iaPoll);
+    if (filas.some(x => x.estado === 'pendiente' || x.estado === 'procesando') && !$('#modalIA').hidden) iaPoll = setTimeout(pintarHistIA, 4000);
+  }
+  async function enviarIA() {
+    const q = $('#iaPregunta').value.trim();
+    if (q.length < 3) { toast('Escribí una pregunta.', 'err'); return; }
+    const f = $('#iaFiltros').checked;
+    const fila = { pregunta: q, campania: S.camp, cultivo: f ? S.cultivo : null, provincia: f && S.prov ? S.prov : null, delegacion: f && S.deleg ? S.deleg : null };
+    $('#bIAEnviar').disabled = true;
+    const r = await sb.from('ia_solicitudes').insert(fila);
+    $('#bIAEnviar').disabled = false;
+    if (r.error) { toast(r.error.message || 'No se pudo enviar la pregunta', 'err'); return; }
+    $('#iaPregunta').value = '';
+    await pintarHistIA();
+  }
+  const cerrarIA = () => { $('#modalIA').hidden = true; clearTimeout(iaPoll); };
+
   // ---------- informe ----------
   let infLista = [];
   function descFiltro() {
@@ -603,8 +672,15 @@ ${det.map(x => `<div class="loc"><h2>${esc(x.l.nombre)} · ${esc(x.l.provincia)}
   $('#bInfPdf').addEventListener('click', () => { const sel = infElegidos(); $('#modalInf').hidden = true; abrirInforme(sel, $('#infDetalle').checked); });
   $('#bInfCsv').addEventListener('click', () => { descargarCSV(infElegidos()); $('#modalInf').hidden = true; });
   $('#bInfClose').addEventListener('click', () => { $('#modalInf').hidden = true; });
+  $('#bIA').addEventListener('click', () => abrirIA().catch(e => toast(e.message || String(e), 'err')));
+  $('#bIAClose').addEventListener('click', cerrarIA);
+  $('#modalIA').addEventListener('click', e => { if (e.target.id === 'modalIA') cerrarIA(); });
+  document.querySelectorAll('.ia-tabs button').forEach(b => b.addEventListener('click', () => tabIA(b.dataset.t)));
+  $('#iaInformes').addEventListener('change', e => pintarInformeIA(+e.target.value));
+  $('#bIAEnviar').addEventListener('click', () => enviarIA().catch(e => toast(e.message || String(e), 'err')));
+  $('#iaPregunta').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) enviarIA(); });
   $('#modalInf').addEventListener('click', e => { if (e.target.id === 'modalInf') $('#modalInf').hidden = true; });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#modalInf').hidden = true; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('#modalInf').hidden = true; cerrarIA(); } });
 
   // ---------- panel ajustable ----------
   const ANCHO_DEF = 440;

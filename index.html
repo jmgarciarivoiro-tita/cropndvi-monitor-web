@@ -38,6 +38,7 @@
     <h1>CropNDVI<span class="lg"> Monitor</span></h1>
     <span id="workerPill" class="pill off" title="Última actualización de cada proceso del worker">Actualización: …</span>
     <span class="sp"></span>
+    <button class="hbtn" id="bIA" type="button" title="Informe semanal y preguntas con IA"><span class="lg">Análisis IA</span><span class="sm">IA</span></button>
     <button class="hbtn" id="bInforme" type="button" title="Informe de las localidades filtradas (PDF o Excel)"><span class="lg">Exportar informe</span><span class="sm">Informe</span></button>
     <button class="hbtn ghost" id="bRefrescar" type="button" title="Volver a leer los datos">↻<span class="lg"> Actualizar</span></button>
     <button class="hbtn ghost" id="bLogout" type="button" title="Cerrar sesión">Salir</button>
@@ -91,6 +92,24 @@
     <div id="infLista" class="inf-lotes"></div>
     <label class="inf-opt"><input type="checkbox" id="infDetalle"> Detalle por localidad con curvas de NDVI y de avance (una página cada una, hasta 60)</label>
     <div class="mbtns"><button class="btn" id="bInfClose" type="button">Cancelar</button><button class="btn" id="bInfCsv" type="button">Excel (CSV)</button><button class="btn primary" id="bInfPdf" type="button">Informe para imprimir / PDF</button></div>
+  </div>
+</div>
+
+<div id="modalIA" class="modal" hidden>
+  <div class="mbox mbox-ia" role="dialog" aria-modal="true" aria-labelledby="iaTitulo">
+    <div class="ia-cab"><h3 id="iaTitulo">Análisis IA</h3><span id="iaEstado" class="ia-estado"></span><button class="lnk" id="bIAClose" type="button" aria-label="Cerrar">✕</button></div>
+    <div class="seg ia-tabs" role="tablist"><button type="button" data-t="semanal" role="tab" aria-checked="true">Informe semanal</button><button type="button" data-t="preguntar" role="tab">Preguntar</button></div>
+    <div id="iaSemanal" class="ia-panel">
+      <label class="ia-sel">Semana<select id="iaInformes"></select></label>
+      <div id="iaInforme" class="ia-md"></div>
+    </div>
+    <div id="iaPreguntar" class="ia-panel" hidden>
+      <textarea id="iaPregunta" maxlength="2000" rows="3" placeholder="Ej.: ¿Qué delegaciones de Córdoba están más atrasadas en la cosecha de trigo y cómo vienen las lluvias?"></textarea>
+      <label class="inf-opt"><input type="checkbox" id="iaFiltros" checked> Usar los filtros actuales: <span id="iaFiltroTxt"></span></label>
+      <div class="mbtns"><button class="btn primary" id="bIAEnviar" type="button">Preguntar</button></div>
+      <div id="iaHist" class="ia-hist"></div>
+    </div>
+    <p class="ia-pie">Lo escribe un modelo de IA (Groq) con los datos agregados del monitor. Puede equivocarse: verificá las cifras en el mapa antes de decidir.</p>
   </div>
 </div>
 
