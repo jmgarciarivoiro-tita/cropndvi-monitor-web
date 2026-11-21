@@ -315,9 +315,9 @@
     S.sel = id;
     document.querySelectorAll('#list .row').forEach(r => r.classList.toggle('sel', Number(r.dataset.id) === id));
     const l = locs.get(id);
-    if (centrar && l) map.setView([l.lat, l.lon], Math.max(map.getZoom(), 9));
+    if (centrar && l) centrarVisible(l, Math.max(map.getZoom(), 9));
     renderDetalle();
-    if (window.matchMedia('(max-width:900px)').matches) $('#detail').scrollIntoView({ behavior: 'smooth' });
+    if (esMovil()) { hoja('full'); requestAnimationFrame(() => $('#panelScroll').scrollTo({ top: $('#detail').offsetTop - 8, behavior: 'smooth' })); }
   }
   function textoPrediccion(r, c, l) {
     if (!r || !r.estado) return `<div class="vacio">Sin predicción todavía para ${esc(c.nombre.toLowerCase())} en esta localidad.</div>`;
@@ -718,9 +718,69 @@ ${det.map(x => `<div class="loc"><h2>${esc(x.l.nombre)} · ${esc(x.l.provincia)}
     window.addEventListener('resize', () => { navH(); const w = $('#panel').getBoundingClientRect().width; if (window.innerWidth > 900 && w > anchoMax()) fijarAncho(anchoMax(), false); });
     new ResizeObserver(navH).observe($('#filtros'));
   })();
+  // ---------- v5: paneles flotantes y hoja inferior en celular ----------
   const esMovil = () => window.matchMedia('(max-width:900px)').matches;
-  window.addEventListener('scroll', () => { $('#bVerMapa').hidden = !(esMovil() && window.scrollY > window.innerHeight * 0.45); }, { passive: true });
-  $('#bVerMapa').addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  var hojaLista = false;   // var: se puede leer antes de iniciar la hoja
+  // altura ocupada por encabezado + filtros: los controles del mapa y la hoja empiezan debajo
+  function uiTop() {
+    document.documentElement.style.setProperty('--ui-top', Math.round($('#filtros').getBoundingClientRect().bottom + 8) + 'px');
+    if (hojaLista) requestAnimationFrame(() => hoja($('#panel').dataset.sheet || 'peek'));   // la hoja cambia de alto
+  }
+  new ResizeObserver(uiTop).observe($('#filtros')); window.addEventListener('resize', uiTop); uiTop();
+  // centra la localidad en la parte del mapa que no tapa el panel
+  function centrarVisible(l, z) {
+    map.setView([l.lat, l.lon], z, { animate: false });
+    const r = $('#panel').getBoundingClientRect();
+    if (esMovil()) map.panBy([0, Math.min(r.height, window.innerHeight * 0.5) / 2], { animate: true });
+    else map.panBy([r.width / 2, 0], { animate: true });
+  }
+  const PEEK = 168, POS_HOJA = ['peek', 'mitad', 'full'];
+  function alturaHoja() { return $('#panel').getBoundingClientRect().height; }
+  function yDe(estado) { const h = alturaHoja(); return estado === 'full' ? 0 : estado === 'mitad' ? Math.max(0, h - window.innerHeight * 0.55) : Math.max(0, h - PEEK); }
+  function hoja(estado) {
+    const p = $('#panel');
+    p.dataset.sheet = estado;
+    if (alturaHoja() > 0) p.style.setProperty('--sheet-y', yDe(estado) + 'px'); else p.style.removeProperty('--sheet-y');
+    document.body.classList.toggle('hoja-alta', estado !== 'peek');
+    $('#bVerMapa').hidden = !(esMovil() && estado === 'full');
+    if (estado === 'peek') $('#panelScroll').scrollTop = 0;
+  }
+  (function initHoja() {
+    const p = $('#panel'), h = $('#sheetHandle');
+    let y0 = 0, base = 0, t0 = 0, movio = false;
+    h.addEventListener('pointerdown', e => {
+      if (!esMovil()) return;
+      h.setPointerCapture(e.pointerId); p.classList.add('arrastrando');
+      y0 = e.clientY; base = yDe(p.dataset.sheet); t0 = Date.now(); movio = false;
+    });
+    h.addEventListener('pointermove', e => {
+      if (!p.classList.contains('arrastrando')) return;
+      const dy = e.clientY - y0; if (Math.abs(dy) > 4) movio = true;
+      p.style.setProperty('--sheet-y', Math.max(0, Math.min(yDe('peek'), base + dy)) + 'px');
+    });
+    const soltar = e => {
+      if (!p.classList.contains('arrastrando')) return;
+      p.classList.remove('arrastrando');
+      const i = POS_HOJA.indexOf(p.dataset.sheet);
+      if (!movio) { hoja(POS_HOJA[(i + 1) % 3]); return; }                       // toque: siguiente posición
+      const dy = e.clientY - y0, v = dy / Math.max(1, Date.now() - t0);
+      if (Math.abs(v) > 0.5) { hoja(POS_HOJA[Math.max(0, Math.min(2, i + (v < 0 ? 1 : -1)))]); return; }   // gesto rápido
+      const y = base + dy;                                                        // si no, la posición más cercana
+      hoja(POS_HOJA.reduce((a, b) => (Math.abs(yDe(b) - y) < Math.abs(yDe(a) - y) ? b : a)));
+    };
+    h.addEventListener('pointerup', soltar); h.addEventListener('pointercancel', soltar);
+    h.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); hoja(POS_HOJA[(POS_HOJA.indexOf(p.dataset.sheet) + 1) % 3]); } });
+    // desde la hoja asomada, tocar el resumen la sube a la mitad
+    $('#panelScroll').addEventListener('click', () => { if (esMovil() && p.dataset.sheet === 'peek') hoja('mitad'); }, true);
+    window.addEventListener('resize', () => hoja(p.dataset.sheet));
+    hoja('peek');
+    hojaLista = true;
+  })();
+  $('#bFiltros').addEventListener('click', () => {
+    const f = $('#filtros'), ab = f.classList.toggle('abierto');
+    $('#bFiltros').setAttribute('aria-expanded', String(ab));
+  });
+  $('#bVerMapa').addEventListener('click', () => hoja('peek'));
 
   // ---------- sesión ----------
   let recarga = null;
@@ -728,6 +788,7 @@ ${det.map(x => `<div class="loc"><h2>${esc(x.l.nombre)} · ${esc(x.l.provincia)}
     me = session.user;
     $('#login').hidden = true; $('#app').hidden = false;
     if (!map) initMap(); else map.invalidateSize();
+    uiTop(); hoja($('#panel').dataset.sheet || 'peek');
     try { await cargarBase(); await cargarCampania(); }
     catch (e) { toast('No se pudieron leer los datos: ' + (e.message || e), 'err'); }
     clearInterval(recarga);

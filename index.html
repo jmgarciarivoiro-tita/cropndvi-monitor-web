@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1f5f3a">
+<meta name="theme-color" content="#dfe6dc">
 <title>CropNDVI Monitor v4</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -46,6 +46,7 @@
   <nav id="filtros" aria-label="Filtros">
     <label>Campaña<select id="fCamp"></select></label>
     <div class="seg" id="fCultivo" role="radiogroup" aria-label="Cultivo"></div>
+    <button type="button" id="bFiltros" aria-expanded="false" aria-controls="filtros">Filtros <span aria-hidden="true">▾</span></button>
     <label>Ver en el mapa<select id="fModo">
       <option value="estado">Estado del cultivo</option>
       <option value="cosecha">% cosechado (estimado)</option>
@@ -63,7 +64,9 @@
       <div id="leyenda" class="leyenda" aria-live="polite"></div>
     </div>
     <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Ajustar ancho del panel" tabindex="0" title="Arrastrá para cambiar el ancho del panel (doble clic: ancho original)"></div>
-    <aside id="panel">
+    <aside id="panel" data-sheet="peek">
+      <div id="sheetHandle" role="button" tabindex="0" aria-label="Subir o bajar el panel"><span></span></div>
+      <div id="panelScroll">
       <div class="sec">
         <h2 id="kpiTitulo">Resumen</h2>
         <div id="summary"></div>
@@ -76,6 +79,7 @@
         <div id="list"></div>
       </div>
       <div id="detail" hidden></div>
+      </div>
     </aside>
   </main>
   <button type="button" id="bVerMapa" class="fab" hidden>▲ Mapa</button>
