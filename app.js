@@ -42,6 +42,15 @@
     // flete: costo por tonelada a la terminal elegida (o a la más barata), directo o pasando por un acopio propio
     flete: { titulo: 'Flete a puerto ($/tn)', valor: (r, c, f) => (f ? f.costo_mejor_tn : null), rango: () => rangoFlete, pesos: true, porLocalidad: true,
       texto: (v, r, f) => (v == null ? 'sin ruta' : `$ ${fmt(v)}/tn` + (f && f.modo === 'acopio' ? ' · vía acopio' : '')) },
+    // riesgo climático de calidad (#calidad): exposición a calor en el llenado y lluvia sobre el cultivo maduro
+    riesgo: { titulo: 'Riesgo climático de calidad', valor: r => (r && r.riesgo ? NIV_RIESGO.indexOf(r.riesgo.nivel) : null), color: v => (v == null || v < 0 ? SIN_DATO : RAMPA_RIESGO[v]),
+      texto: (v, r) => (v == null || v < 0 ? 'sin estimación' : 'Riesgo ' + NIV_RIESGO[v] + (r.riesgo.motivos && r.riesgo.motivos.length ? ' · ' + r.riesgo.motivos.map(m => FACTOR[m].corto).join(', ') : '')) },
+  };
+  const NIV_RIESGO = ['bajo', 'medio', 'alto'], RAMPA_RIESGO = ['#f2d49b', '#e8893a', '#c03d24'];
+  const FACTOR = {
+    calor_llenado: { nombre: 'Calor en el llenado', corto: 'calor', unidad: 'días', ayuda: 'Días con máxima de 32 °C (trigo) o 35 °C (soja, maíz) entre el pico de verdor y la madurez: grano chuzo, menor peso hectolítrico.' },
+    lluvia_maduro: { nombre: 'Lluvia sobre el cultivo maduro', corto: 'lluvia en madurez', unidad: 'mm', ayuda: 'Lluvia desde la madurez hasta la cosecha esperada: brotado y bajo peso (trigo), granos dañados o verdes (soja), humedad y demoras.' },
+    dias_humedos: { nombre: 'Días húmedos en la cosecha', corto: 'días húmedos', unidad: 'días', ayuda: 'Días con lluvia de 2 mm o más o humedad relativa de 90 % o más en la misma ventana.' },
   };
   let rangoFlete = [5000, 60000];
   const rangoDe = modo => (typeof MODOS[modo].rango === 'function' ? MODOS[modo].rango() : MODOS[modo].rango);
@@ -154,7 +163,7 @@
   async function cargarCampania() {
     document.body.classList.add('cargando');
     try {
-      const filas = await todas(() => sb.from('v_mapa').select('dept_id,cultivo,ha,fuente,confianza_mascara,semana,ndvi_p50,fin_ciclo_pct,fecha_corte,estado,cosechado_pct,fecha_50,fecha_50_desde,fecha_50_hasta,fecha_90,fecha_90_desde,fecha_90_hasta,confianza').eq('campania', S.camp));
+      const filas = await todas(() => sb.from('v_mapa').select('dept_id,cultivo,ha,fuente,confianza_mascara,semana,ndvi_p50,fin_ciclo_pct,fecha_corte,estado,cosechado_pct,fecha_50,fecha_50_desde,fecha_50_hasta,fecha_90,fecha_90_desde,fecha_90_hasta,confianza,riesgo:detalle_prediccion->riesgo').eq('campania', S.camp));
       mapa = new Map();
       for (const r of filas) { if (!mapa.has(r.dept_id)) mapa.set(r.dept_id, {}); mapa.get(r.dept_id)[r.cultivo] = r; }
       await cargarOficial();
@@ -239,13 +248,16 @@
     const md = MODOS[S.modo], rg = rangoDe(S.modo);
     let h = `<b>${esc(md.titulo)}</b>`;
     if (S.modo === 'estado') h += ESTADOS.map((e, i) => `<div class="it"><i class="sw" style="background:${RAMPA[i]}"></i>${esc(e.label)}</div>`).join('');
+    else if (S.modo === 'riesgo') h += NIV_RIESGO.map((n, i) => `<div class="it"><i class="sw" style="background:${RAMPA_RIESGO[i]}"></i>${n[0].toUpperCase() + n.slice(1)}</div>`).join('');
     else h += `<div class="grad" style="background:linear-gradient(90deg,${SEQ.join(',')})"></div><div class="esc"><span>${md.pesos ? '$ ' : ''}${fmt(rg[0], md.dec || 0)}</span><span>${md.pesos ? '$ ' : ''}${fmt(rg[1], md.dec || 0)}${esc(md.suf || '')}</span></div>`;
     if (S.modo === 'flete') h += '<div class="it"><i class="dest acopio"></i>Acopio propio</div><div class="it"><i class="dest terminal"></i>Terminal portuaria</div>';
     h += `<div class="it"><i class="sw" style="background:${SIN_DATO}"></i>Sin dato</div>`;
     const sinPred = S.modo === 'estado' && ![...mapa.values()].some(v => v[S.cultivo] && v[S.cultivo].estado);
     const notaFlete = S.modo !== 'flete' ? '' : !fleteRes.size ? 'Todavía no hay rutas calculadas. ' :
       `${S.destino ? 'A ' + esc(nomDest(S.destino)) : 'A la terminal más barata'}, directo o vía acopio. Tarifa: ${esc(tarifa && tarifa.fuente || '—')}${tarifa ? ' (' + fdiaL(tarifa.cargado_at) + ')' : ''}. `;
-    h += `<small>${sinPred ? 'Sin predicción todavía: estado según la madurez satelital. ' : ''}${notaFlete}${md.porLocalidad ? 'Tamaño fijo.' : `Tamaño: hectáreas de ${esc(CUL[S.cultivo].nombre.toLowerCase())} en el círculo de 3 km.`}</small>`;
+    const notaRiesgo = S.modo !== 'riesgo' ? '' : ![...mapa.values()].some(v => v[S.cultivo] && v[S.cultivo].riesgo) ? 'Todavía no hay estimación de riesgo para este cultivo. '
+      : `Comparado con la historia del cultivo: medio = peor que un año mediano, alto = cuartil más expuesto.${S.cultivo.startsWith('soja') ? ' En soja es indicativo (sin validar).' : ''} `;
+    h += `<small>${sinPred ? 'Sin predicción todavía: estado según la madurez satelital. ' : ''}${notaFlete}${notaRiesgo}${md.porLocalidad ? 'Tamaño fijo.' : `Tamaño: hectáreas de ${esc(CUL[S.cultivo].nombre.toLowerCase())} en el círculo de 3 km.`}</small>`;
     $('#leyenda').innerHTML = h;
   }
 
@@ -328,6 +340,41 @@
       ${ya(r.fecha_90) ? 'El 90 % se alcanzó el ' + fdiaL(r.fecha_90) : '90 % cosechado: ' + banda(r.fecha_90, r.fecha_90_desde, r.fecha_90_hasta)}<br>
       <span class="muted">Confianza ${fmt((r.confianza || 0) * 100)} %. La banda combina el clima de años anteriores y el error medido contra el MAGyP.</span></div>`;
   }
+  function textoRiesgo(r, c) {
+    const q = r && r.riesgo;
+    if (!q) return `<div class="vacio">Sin estimación de riesgo todavía para ${esc(c.nombre.toLowerCase())} en esta localidad.</div>`;
+    const i = NIV_RIESGO.indexOf(q.nivel);
+    const filas = Object.entries(q.factores || {}).filter(([k]) => FACTOR[k]).sort((a, b) => (b[1].principal ? 1 : 0) - (a[1].principal ? 1 : 0)).map(([k, f]) => `<tr class="${f.principal ? '' : 'sec'}">
+      <td title="${esc(FACTOR[k].ayuda)}">${esc(FACTOR[k].nombre)}${f.principal ? '' : '<small>informativo</small>'}</td><td class="n">${fmt(f.valor, f.valor < 10 ? 1 : 0)} ${FACTOR[k].unidad}</td>
+      <td><span class="niv niv-${esc(f.nivel)}" style="background:${RAMPA_RIESGO[NIV_RIESGO.indexOf(f.nivel)]}">${esc(f.nivel)}</span></td><td class="n">${fmt((f.prob_alto || 0) * 100)} %</td></tr>`).join('');
+    return `<div class="riesgo"><span class="estado-chip"><i style="background:${RAMPA_RIESGO[i]}"></i>Riesgo ${esc(q.nivel)}${q.motivos && q.motivos.length ? ' · ' + esc(q.motivos.map(m => FACTOR[m].corto).join(', ')) : ''}</span>
+      ${q.prob_alto != null ? `<span class="muted"> Probabilidad de nivel alto: ${fmt(q.prob_alto * 100)}\u00a0%</span>` : ''}
+      <div class="tabla-scroll"><table class="cult"><tr><th>Factor</th><th>Valor</th><th>Nivel</th><th>Prob. alto</th></tr>${filas}</table></div>
+      <p class="cap">Exposición del cultivo, con la fenología por píxel de la predicción: clima observado hasta hoy y años anteriores para lo que falta (${fmt(q.escenarios)} escenarios).
+      No es un análisis de calidad: indica si el clima fue peor que lo habitual en las etapas que deterioran el grano.${q.validado === false ? ' En soja es indicativo: no se pudo validar contra MAGyP.' : ' Validado contra los comentarios de calidad de MAGyP 2019-2025.'}</p></div>`;
+  }
+  // comentarios de calidad de los informes semanales MAGyP para la delegación (o la provincia) en la campaña
+  const NOA = ['TUCUMAN', 'SALTA', 'JUJUY', 'CATAMARCA'];
+  async function renderCalidad(id, c, l) {
+    const k = 'cal|' + S.camp + '|' + GRANO[c.id];
+    let filas = cacheDet.get(k);
+    if (!filas) {
+      const { data, error } = await sb.from('calidad_magyp').select('fecha,provincia,delegacion,calidad,problemas,oracion').eq('campania', S.camp).eq('cultivo', GRANO[c.id]).order('fecha', { ascending: false });
+      if (error) throw error;
+      filas = data || []; cacheDet.set(k, filas);
+    }
+    const el = $('#dCalidad');
+    if (!el || S.sel !== id) return;
+    const pv = normTxt(l.provincia).toUpperCase(), provs = NOA.includes(pv) ? [pv, 'NOA'] : [pv];
+    const delg = filas.filter(x => x.delegacion && x.delegacion === l.delegacion);
+    const prov = filas.filter(x => !x.delegacion && provs.includes(x.provincia));
+    const ver = [...delg, ...prov].sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 6);
+    if (!ver.length) { el.innerHTML = `<p class="cap">MAGyP no comentó la calidad de ${esc(GRANO[c.id])} en ${esc(l.delegacion || l.provincia)} esta campaña.</p>`; return; }
+    const PROB = { bajo_peso: 'bajo peso', humedad: 'humedad', danado: 'dañado', verde: 'grano verde', brotado: 'brotado' };
+    el.innerHTML = `<h4>Lo que informó MAGyP sobre la calidad</h4><ul class="cal-mag">${ver.map(x => `<li><span class="muted">${fdia(x.fecha)} · ${esc(x.delegacion ? 'delegación ' + x.delegacion : x.provincia)}</span>
+      ${x.calidad ? `<b class="cal-${esc(x.calidad)}">${esc(x.calidad)}</b>` : ''}${(x.problemas || []).map(p => `<b class="cal-prob">${esc(PROB[p] || p)}</b>`).join('')}<q>${esc(x.oracion)}</q></li>`).join('')}</ul>
+      <p class="cap">Oraciones de los informes semanales de Estimaciones Agrícolas leídas por reglas; se muestran tal cual para poder verificarlas.</p>`;
+  }
   async function renderDetalle() {
     const id = S.sel, l = locs.get(id), el = $('#detail');
     if (!l) { el.hidden = true; return; }
@@ -345,6 +392,8 @@
         <td>${f.cosechado_pct == null ? '—' : fmt(f.cosechado_pct) + ' %'}</td><td>${f.fecha_50 ? fdia(f.fecha_50) : '—'}</td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">Sin cultivos detectados todavía.</td></tr>'}
       </table></div>
       <h3>Predicción de cosecha · ${esc(c.nombre)}</h3>${textoPrediccion(r, c, l)}
+      <h3>Riesgo climático de calidad · ${esc(c.nombre)}</h3>${textoRiesgo(r, c)}
+      <div id="dCalidad"></div>
       <h3>NDVI semanal · ${esc(c.nombre)}</h3><div class="chart-box"><canvas id="cNdvi" aria-label="NDVI semanal"></canvas></div>
       <p class="cap">NDVI mediano de los píxeles del cultivo (banda: percentil 25 a 75). Línea gris: campaña anterior, si hay datos.</p>
       <h3>Avance · ${esc(c.nombre)}</h3><div class="chart-box"><canvas id="cAvance" aria-label="Avance de madurez y cosecha"></canvas></div>
@@ -361,6 +410,7 @@
     try { d = await datosDetalle(id); } catch (e) { toast('No se pudieron leer las series: ' + (e.message || e), 'err'); return; }
     if (S.sel !== id) return;
     dibujarNdvi(d, c); dibujarAvance(d, c, r, of); dibujarLluvia(d); tablaAvance(d, c, of);
+    renderCalidad(id, c, l).catch(e => { const el2 = $('#dCalidad'); if (el2) el2.innerHTML = `<p class="cap">No se pudieron leer los comentarios de calidad: ${esc(e.message || e)}</p>`; });
     renderFlete(id, c).catch(e => { const el2 = $('#dFlete'); if (el2) el2.innerHTML = `<div class="vacio">No se pudo leer el flete: ${esc(e.message || e)}</div>`; });
   }
   const GRANO = { trigo: 'trigo', maiz_temprano: 'maiz', maiz_tardio: 'maiz', soja_1ra: 'soja', soja_2da: 'soja' };
